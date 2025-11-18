@@ -1,0 +1,110 @@
+name: RDP
+
+on:
+  workflow_dispatch:
+
+jobs:
+  secure-rdp:
+    runs-on: windows-latest
+    timeout-minutes: 360 # Max 6 hours
+
+    env:
+      # === USER SETTINGS (Aap badal sakte hain) ===
+      STATIC_HOSTNAME: "my-github-rdp"       # Tailscale par yahi naam dikhega
+      RDP_USER: "RDP"                        # User ka naam
+      
+      # === STORAGE SETTINGS ===
+      # 'gdrive' wahi naam hona chahiye jo rclone.conf mein bracket [] mein hai
+      RCLONE_REMOTE_PATH: "gdrive:MyRDPData" 
+      LOCAL_SYNC_PATH: "C:\PersistentData"
+      # ============================================
+      
+      # Secrets load kar rahe hain
+      RDP_PASSWORD: ${{ secrets.RDP_PASSWORD }}
+
+    steps:
+      # 1. RDP Enable karna & Firewall Open karna
+      - name: Configure Core RDP Settings
+        run: |
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fDenyTSConnections" -Value 0 -Force
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "UserAuthentication" -Value 0 -Force
+          netsh advfirewall firewall add rule name="RDP-Tailscale" dir=in action=allow protocol=TCP localport=3389
+
+      # 2. Static User Create karna (Secret Password ke saath)
+      - name: Create RDP User
+        run: |
+          if (-not $env:RDP_PASSWORD) { Write-Error "Error: RDP_PASSWORD secret nahi mila!"; exit 1 }
+          $securePass = ConvertTo-SecureString $env:RDP_PASSWORD -AsPlainText -Force
+          New-LocalUser -Name $env:RDP_USER -Password $securePass -AccountNeverExpires
+          Add-LocalGroupMember -Group "Administrators" -Member $env:RDP_USER
+          Add-LocalGroupMember -Group "Remote Desktop Users" -Member $env:RDP_USER
+
+      # 3. Rclone Install karna
+      - name: Install Rclone
+        run: |
+          Invoke-WebRequest -Uri "https://downloads.rclone.org/rclone-current-windows-amd64.zip" -OutFile "rclone.zip"
+          Expand-Archive -Path "rclone.zip" -DestinationPath "C:\rclone"
+          Remove-Item "rclone.zip"
+          Copy-Item -Path "C:\rclone\*\rclone.exe" -Destination "C:\Windows\System32\"
+        shell: powershell
+
+      # 4. Rclone Config Set karna (Secret se)
+      - name: Configure Rclone
+        run: |
+          if (-not $env:RCLONE_CONF) { Write-Error "Error: RCLONE_CONF secret nahi mila!"; exit 1 }
+          New-Item -ItemType Directory -Force -Path "$env:APPDATA\rclone"
+          Set-Content -Path "$env:APPDATA\rclone\rclone.conf" -Value $env:RCLONE_CONF
+        env:
+          RCLONE_CONF: ${{ secrets.RCLONE_CONF }}
+        shell: powershell
+
+      # 5. Data Download (Cloud -> Server) - STARTUP PAR
+      - name: Initial Data Download (Restore)
+        run: |
+          Write-Host "Google Drive se data download ho raha hai..."
+          # '--create-empty-src-dirs' zaroori hai taaki empty folder bhi sync ho
+          rclone sync $env:RCLONE_REMOTE_PATH $env:LOCAL_SYNC_PATH --progress --create-empty-src-dirs
+        shell: cmd
+
+      # 6. Desktop Shortcut Banana
+      - name: Create Desktop Shortcut
+        run: |
+          $shortcutPath = "C:\Users\Public\Desktop\PersistentData.lnk"
+          $wshShell = New-Object -ComObject WScript.Shell
+          $shortcut = $wshShell.CreateShortcut($shortcutPath)
+          $shortcut.TargetPath = $env:LOCAL_SYNC_PATH
+          $shortcut.Save()
+        shell: powershell
+
+      # 7. Tailscale Install karna
+      - name: Install Tailscale
+        run: |
+          $tsUrl = "https://pkgs.tailscale.com/stable/tailscale-setup-1.82.0-amd64.msi"
+          Invoke-WebRequest -Uri $tsUrl -OutFile "$env:TEMP\tailscale.msi"
+          Start-Process msiexec.exe -ArgumentList "/i", ""$env:TEMP\tailscale.msi"", "/quiet", "/norestart" -Wait
+
+      # 8. Tailscale Connect (Static Hostname ke saath)
+      - name: Connect Tailscale
+        run: |
+          & "$env:ProgramFiles\Tailscale\tailscale.exe" up --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} --hostname=$env:STATIC_HOSTNAME
+          echo "TAILSCALE_HOSTNAME=$env:STATIC_HOSTNAME" >> $env:GITHUB_ENV
+
+      # 9. Loop: Connection zinda rakhna & Auto-Backup (Server -> Cloud)
+      - name: Maintain Connection & Auto-Backup
+        run: |
+          Write-Host "`n=== RDP READY ==="
+          Write-Host "Hostname: $env:TAILSCALE_HOSTNAME"
+          Write-Host "Data Folder: $env:LOCAL_SYNC_PATH (Desktop par shortcut hai)"
+          Write-Host "=================`n"
+          
+          while ($true) {
+              # Har 10 minute (600 seconds) wait karega
+              Start-Sleep -Seconds 600
+              
+              Write-Host "[$(Get-Date)] Auto-Backup started (Uploading to Drive)..."
+              
+              # Background mein sync chalega taaki loop na ruke
+              Start-Process -FilePath "rclone" -ArgumentList "sync $env:LOCAL_SYNC_PATH $env:RCLONE_REMOTE_PATH" -NoNewWindow -Wait
+              
+              Write-Host "[$(Get-Date)] Backup Complete."
+          }
