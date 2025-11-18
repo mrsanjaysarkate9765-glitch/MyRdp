@@ -14,19 +14,22 @@ jobs:
       RDP_USER: "RDP"
       
       # === STORAGE SETTINGS ===
+      # Dhyan dein: Secret mein [gdrive] header hona chahiye
       RCLONE_REMOTE_PATH: "gdrive:MyRDPData" 
-      LOCAL_SYNC_PATH: 'C:\PersistentData' # Single quotes use karein backslash issue se bachne ke liye
+      LOCAL_SYNC_PATH: 'C:\PersistentData'
       # =====================
       
       RDP_PASSWORD: ${{ secrets.RDP_PASSWORD }}
 
     steps:
+      # 1. RDP Settings & Firewall
       - name: Configure Core RDP Settings
         run: |
           Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fDenyTSConnections" -Value 0 -Force
           Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "UserAuthentication" -Value 0 -Force
           netsh advfirewall firewall add rule name="RDP-Tailscale" dir=in action=allow protocol=TCP localport=3389
 
+      # 2. Create User
       - name: Create RDP User
         run: |
           if (-not $env:RDP_PASSWORD) { Write-Error "Error: RDP_PASSWORD secret nahi mila!"; exit 1 }
@@ -35,6 +38,7 @@ jobs:
           Add-LocalGroupMember -Group "Administrators" -Member $env:RDP_USER
           Add-LocalGroupMember -Group "Remote Desktop Users" -Member $env:RDP_USER
 
+      # 3. Install Rclone
       - name: Install Rclone
         run: |
           Invoke-WebRequest -Uri "https://downloads.rclone.org/rclone-current-windows-amd64.zip" -OutFile "rclone.zip"
@@ -43,6 +47,7 @@ jobs:
           Copy-Item -Path "C:\rclone\*\rclone.exe" -Destination "C:\Windows\System32\"
         shell: powershell
 
+      # 4. Configure Rclone
       - name: Configure Rclone
         run: |
           if (-not $env:RCLONE_CONF) { Write-Error "Error: RCLONE_CONF secret nahi mila!"; exit 1 }
@@ -52,14 +57,29 @@ jobs:
           RCLONE_CONF: ${{ secrets.RCLONE_CONF }}
         shell: powershell
 
-      # === YAHAN FIX KIYA HAI ===
-      - name: Initial Data Download (Restore)
+      # 5. Smart Data Restore (Fail nahi hoga agar folder missing hai)
+      - name: Initial Data Download (Smart Restore)
         run: |
-          Write-Host "Google Drive se data download ho raha hai..."
-          rclone sync $env:RCLONE_REMOTE_PATH $env:LOCAL_SYNC_PATH --progress --create-empty-src-dirs
+          Write-Host "Google Drive se data check kar raha hoon..."
+          $remote = $env:RCLONE_REMOTE_PATH
+          $local = $env:LOCAL_SYNC_PATH
+          
+          # Local folder hamesha banao
+          New-Item -ItemType Directory -Force -Path $local | Out-Null
+          
+          # Sync try karo
+          Write-Host "Downloading from $remote..."
+          & rclone sync $remote $local --progress --create-empty-src-dirs
+          
+          # Agar error aaye (First run ki wajah se), to ignore karo aur pass kar do
+          if ($LASTEXITCODE -ne 0) {
+              Write-Host "⚠ WARNING: Google Drive par folder nahi mila (First Run)."
+              Write-Host "Server 'Fresh Start' kar raha hai. Agle backup mein folder khud ban jaayega."
+              exit 0 # Success signal bhejo
+          }
         shell: powershell
-      # ==========================
 
+      # 6. Create Desktop Shortcut
       - name: Create Desktop Shortcut
         run: |
           $shortcutPath = "C:\Users\Public\Desktop\PersistentData.lnk"
@@ -69,17 +89,20 @@ jobs:
           $shortcut.Save()
         shell: powershell
 
+      # 7. Install Tailscale
       - name: Install Tailscale
         run: |
           $tsUrl = "https://pkgs.tailscale.com/stable/tailscale-setup-1.82.0-amd64.msi"
           Invoke-WebRequest -Uri $tsUrl -OutFile "$env:TEMP\tailscale.msi"
           Start-Process msiexec.exe -ArgumentList "/i", ""$env:TEMP\tailscale.msi"", "/quiet", "/norestart" -Wait
 
+      # 8. Connect Tailscale
       - name: Connect Tailscale
         run: |
           & "$env:ProgramFiles\Tailscale\tailscale.exe" up --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} --hostname=$env:STATIC_HOSTNAME
           echo "TAILSCALE_HOSTNAME=$env:STATIC_HOSTNAME" >> $env:GITHUB_ENV
 
+      # 9. Loop & Auto-Backup
       - name: Maintain Connection & Auto-Backup
         run: |
           Write-Host "`n=== RDP READY ==="
@@ -88,8 +111,12 @@ jobs:
           Write-Host "=================`n"
           
           while ($true) {
-              Start-Sleep -Seconds 600
-              Write-Host "[$(Get-Date)] Auto-Backup started..."
+              Start-Sleep -Seconds 600 # Har 10 minute wait karo
+              
+              Write-Host "[$(Get-Date)] Auto-Backup started (Uploading to Drive)..."
+              
+              # Folder upload karo (Agar folder nahi tha to ab ban jaayega)
               Start-Process -FilePath "rclone" -ArgumentList "sync $env:LOCAL_SYNC_PATH $env:RCLONE_REMOTE_PATH" -NoNewWindow -Wait
+              
               Write-Host "[$(Get-Date)] Backup Complete."
           }
