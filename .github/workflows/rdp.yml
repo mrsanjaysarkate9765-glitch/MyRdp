@@ -14,7 +14,7 @@ jobs:
       RDP_USER: "RDP"
       
       # === STORAGE SETTINGS ===
-      # Secret mein [gdrive] hona chahiye
+      # Secret mein [gdrive] header hona chahiye
       RCLONE_REMOTE_PATH: "gdrive:MyRDPData" 
       LOCAL_SYNC_PATH: 'C:\PersistentData'
       # =====================
@@ -22,7 +22,7 @@ jobs:
       RDP_PASSWORD: ${{ secrets.RDP_PASSWORD }}
 
     steps:
-      # 1. RDP Enable & Firewall Open
+      # 1. RDP Settings & Firewall
       - name: Configure Core RDP Settings
         run: |
           Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fDenyTSConnections" -Value 0 -Force
@@ -89,7 +89,7 @@ jobs:
           $shortcut.Save()
         shell: powershell
 
-      # 7. Install Tailscale (FIXED SYNTAX)
+      # 7. Install Tailscale (CMD FIX - Yeh ab 100% chalega)
       - name: Install Tailscale
         run: |
           $tsUrl = "https://pkgs.tailscale.com/stable/tailscale-setup-1.82.0-amd64.msi"
@@ -97,8 +97,8 @@ jobs:
           
           Invoke-WebRequest -Uri $tsUrl -OutFile $installerPath
           
-          # Fixed: Arguments passed as single string to avoid positional error
-          Start-Process msiexec.exe -ArgumentList "/i "$installerPath" /quiet /norestart" -Wait
+          # Using CMD directly to avoid PowerShell parsing errors
+          cmd /c "msiexec.exe /i $installerPath /quiet /norestart"
         shell: powershell
 
       # 8. Connect Tailscale
