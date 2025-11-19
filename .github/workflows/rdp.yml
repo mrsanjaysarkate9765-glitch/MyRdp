@@ -6,7 +6,7 @@ on:
 jobs:
   secure-rdp:
     runs-on: windows-latest
-    timeout-minutes: 360 # Max 6 hours
+    timeout-minutes: 360
 
     env:
       # === USER SETTINGS ===
@@ -14,7 +14,6 @@ jobs:
       RDP_USER: "RDP"
       
       # === STORAGE SETTINGS ===
-      # Secret mein [gdrive] header hona chahiye
       RCLONE_REMOTE_PATH: "gdrive:MyRDPData" 
       LOCAL_SYNC_PATH: 'C:\PersistentData'
       # =====================
@@ -22,7 +21,7 @@ jobs:
       RDP_PASSWORD: ${{ secrets.RDP_PASSWORD }}
 
     steps:
-      # 1. RDP Settings & Firewall
+      # 1. Basic Setup
       - name: Configure Core RDP Settings
         run: |
           Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fDenyTSConnections" -Value 0 -Force
@@ -32,7 +31,7 @@ jobs:
       # 2. Create User
       - name: Create RDP User
         run: |
-          if (-not $env:RDP_PASSWORD) { Write-Error "Error: RDP_PASSWORD secret nahi mila!"; exit 1 }
+          if (-not $env:RDP_PASSWORD) { Write-Error "RDP_PASSWORD secret missing!"; exit 1 }
           $securePass = ConvertTo-SecureString $env:RDP_PASSWORD -AsPlainText -Force
           New-LocalUser -Name $env:RDP_USER -Password $securePass -AccountNeverExpires
           Add-LocalGroupMember -Group "Administrators" -Member $env:RDP_USER
@@ -47,17 +46,17 @@ jobs:
           Copy-Item -Path "C:\rclone\*\rclone.exe" -Destination "C:\Windows\System32\"
         shell: powershell
 
-      # 4. Configure Rclone Config
+      # 4. Configure Rclone
       - name: Configure Rclone
         run: |
-          if (-not $env:RCLONE_CONF) { Write-Error "Error: RCLONE_CONF secret nahi mila!"; exit 1 }
+          if (-not $env:RCLONE_CONF) { Write-Error "RCLONE_CONF secret missing!"; exit 1 }
           New-Item -ItemType Directory -Force -Path "$env:APPDATA\rclone"
           Set-Content -Path "$env:APPDATA\rclone\rclone.conf" -Value $env:RCLONE_CONF
         env:
           RCLONE_CONF: ${{ secrets.RCLONE_CONF }}
         shell: powershell
 
-      # 5. Smart Data Restore (First Run Safe)
+      # 5. Smart Data Restore
       - name: Initial Data Download (Smart Restore)
         run: |
           Write-Host "Google Drive se data check kar raha hoon..."
@@ -68,36 +67,45 @@ jobs:
           New-Item -ItemType Directory -Force -Path $local | Out-Null
           
           # Sync try karo
-          Write-Host "Downloading from $remote..."
           & rclone sync $remote $local --progress --create-empty-src-dirs
           
-          # Error handling: Agar folder nahi mila (First Run), to ignore karo
           if ($LASTEXITCODE -ne 0) {
-              Write-Host "⚠ WARNING: Google Drive par folder nahi mila (First Run)."
-              Write-Host "Server 'Fresh Start' kar raha hai. Agle backup mein folder khud ban jaayega."
+              Write-Host "⚠️ First Run: Folder nahi mila, Fresh Start kar raha hoon."
               exit 0 
           }
         shell: powershell
 
-      # 6. Create Desktop Shortcut
-      - name: Create Desktop Shortcut
+      # === 🔥 MAGIC STEP: Make Z: Drive & Config Edge 🔥 ===
+      - name: Setup Z: Drive and Magic Edge
         run: |
-          $shortcutPath = "C:\Users\Public\Desktop\PersistentData.lnk"
-          $wshShell = New-Object -ComObject WScript.Shell
-          $shortcut = $wshShell.CreateShortcut($shortcutPath)
-          $shortcut.TargetPath = $env:LOCAL_SYNC_PATH
-          $shortcut.Save()
-        shell: powershell
+          # 1. Folder ko Z: Drive banao
+          subst Z: "$env:LOCAL_SYNC_PATH"
+          Write-Host "Z: Drive Created!"
 
-      # 7. Install Tailscale (CMD FIX - Yeh ab 100% chalega)
+          # 2. Desktop Clean karo (Remove Chrome, Firefox etc.)
+          $desktop = "C:\Users\Public\Desktop"
+          Get-ChildItem $desktop | Where-Object { $_.Name -notlike "*Microsoft Edge*" } | Remove-Item -Force -ErrorAction SilentlyContinue
+          Write-Host "Desktop Cleaned (Only Edge Left)"
+
+          # 3. Edge ko Persistent banao (Data Z: drive par save hoga)
+          $edgeLnk = "$desktop\Microsoft Edge.lnk"
+          $wshShell = New-Object -ComObject WScript.Shell
+          if (Test-Path $edgeLnk) {
+              $shortcut = $wshShell.CreateShortcut($edgeLnk)
+              # Yeh magic command hai: Profile ko Z: drive mein redirect kar raha hai
+              $shortcut.Arguments = "--user-data-dir=`"Z:\EdgeProfile`""
+              $shortcut.Save()
+              Write-Host "Edge Configured for Persistent Login!"
+          }
+        shell: powershell
+      # =====================================================
+
+      # 7. Install Tailscale
       - name: Install Tailscale
         run: |
           $tsUrl = "https://pkgs.tailscale.com/stable/tailscale-setup-1.82.0-amd64.msi"
           $installerPath = "$env:TEMP\tailscale.msi"
-          
           Invoke-WebRequest -Uri $tsUrl -OutFile $installerPath
-          
-          # Using CMD directly to avoid PowerShell parsing errors
           cmd /c "msiexec.exe /i $installerPath /quiet /norestart"
         shell: powershell
 
@@ -112,16 +120,15 @@ jobs:
         run: |
           Write-Host "`n=== RDP READY ==="
           Write-Host "Hostname: $env:TAILSCALE_HOSTNAME"
-          Write-Host "Data Folder: $env:LOCAL_SYNC_PATH (Desktop par shortcut hai)"
+          Write-Host "Storage: Z: Drive (Yehi Google Drive hai)"
+          Write-Host "Browser: Edge (Login will be saved automatically)"
           Write-Host "=================`n"
           
           while ($true) {
-              Start-Sleep -Seconds 600 # Har 10 minute wait karega
-              
-              Write-Host "[$(Get-Date)] Auto-Backup started (Uploading to Drive)..."
-              
-              # Backup chalega
+              Start-Sleep -Seconds 600
+              Write-Host "[$(Get-Date)] Auto-Backup started..."
+              # Backup Z: drive (which is actually C:\PersistentData)
               Start-Process -FilePath "rclone" -ArgumentList "sync $env:LOCAL_SYNC_PATH $env:RCLONE_REMOTE_PATH" -NoNewWindow -Wait
-              
               Write-Host "[$(Get-Date)] Backup Complete."
           }
+          
