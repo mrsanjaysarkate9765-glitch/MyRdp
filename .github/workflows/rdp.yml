@@ -131,4 +131,3 @@ jobs:
               Start-Process -FilePath "rclone" -ArgumentList "sync $env:LOCAL_SYNC_PATH $env:RCLONE_REMOTE_PATH" -NoNewWindow -Wait
               Write-Host "[$(Get-Date)] Backup Complete."
           }
-          
