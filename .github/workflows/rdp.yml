@@ -60,15 +60,22 @@ jobs:
           }
         shell: powershell
 
-      - name: Setup Z Drive and Edge
+      # === FIXED: Startup Script for Z: Drive ===
+      - name: Setup Persistent Z Drive and Clean Desktop
         run: |
-          subst Z: "$env:LOCAL_SYNC_PATH"
-          Write-Host "Z: Drive Created!"
-          
+          # 1. Startup Script Banao (Jo login karte hi Z: Drive banayega)
+          $startupFolder = "C:\ProgramData\Microsoft\Windows\Start Menu\Programs\StartUp"
+          $batchFile = "$startupFolder\MapDrive.bat"
+          # Yeh command user login par chalegi
+          Set-Content -Path $batchFile -Value "@echo off`nsubst Z: ""$env:LOCAL_SYNC_PATH"""
+          Write-Host "Startup Script Created at $batchFile"
+
+          # 2. Desktop Clean karo (Strong Mode)
           $desktop = "C:\Users\Public\Desktop"
-          Get-ChildItem $desktop | Where-Object { $_.Name -notlike "*Microsoft Edge*" } | Remove-Item -Force -ErrorAction SilentlyContinue
+          Get-ChildItem $desktop | Where-Object { $_.Name -notlike "*Microsoft Edge*" } | Remove-Item -Force -Recurse -ErrorAction SilentlyContinue
           Write-Host "Desktop Cleaned"
           
+          # 3. Edge Config (Z: drive profile)
           $edgeLnk = "$desktop\Microsoft Edge.lnk"
           $wshShell = New-Object -ComObject WScript.Shell
           if (Test-Path $edgeLnk) {
@@ -78,6 +85,7 @@ jobs:
               Write-Host "Edge Configured"
           }
         shell: powershell
+      # ==========================================
 
       - name: Install Tailscale
         run: |
